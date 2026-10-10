@@ -123,6 +123,15 @@ details.method summary{cursor:pointer;font-weight:bold}
 details.method li{margin:3px 0}
 details.method a{color:#1565c0;word-break:break-all}
 .mlinks{margin:10px 0 4px}
+details.drules{background:#fffaf0;border:1px solid #e0c98a;border-radius:10px;margin:6px 0 4px;padding:4px 10px;font-size:14px;line-height:1.45}
+details.drules summary{cursor:pointer;font-weight:bold;color:#7a5a12;padding:2px 0}
+details.drules ol{margin:2px 0 4px;padding-left:22px}
+details.drules li{margin:0}
+.why{margin:10px 0 6px;padding:8px 10px;border-radius:10px;background:#f6f3ea;border:1px solid #ddd2b2}
+.why h4{margin:0 0 4px;font-size:16px}
+.why .wl{margin:4px 0;font-size:15px;line-height:1.5}
+.why .wl .go{display:inline-block;margin-left:6px;color:#8a6d0b;text-decoration:underline;cursor:pointer;font-size:14px;white-space:nowrap}
+@media (max-width:480px){details.drules{font-size:13px;padding:3px 8px}details.drules ol{padding-left:18px}.why .wl{font-size:14px}}
 .mlink{border:1px dashed #c9a227;border-radius:10px;background:#fffdf0;padding:7px 10px;margin:6px 0;cursor:pointer}
 .mlink:hover{background:#fff6cc}
 .mlink .ml-head{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;font-size:15px}
@@ -491,6 +500,97 @@ var Core = (function () {
     return canMelds(d, 1);
   }
 
+  // ---- 打邊隻教條 (discard rules): rule flags + verified explanation lines ----
+  var DRULE_NAME = { TERM: '孤張么九先打', ISO1: '孤張先打', MUST: '留住必背牌型', NB: '中間孖打中間', KAN: '唔好急住打第 4 隻' };
+  function relCounts(s) { return fromString(s).slice(1).join('').replace(/^0+|0+$/g, ''); }
+  function shapeLabel(placed, shape) {
+    return placed === shape ? placed : placed + '（即 ' + shape + (relCounts(placed) === relCounts(shape) ? ' 移位' : ' 左右反轉') + '）';
+  }
+  function discardRuleSets(c, mainTargets) {
+    var g = function (t) { return t >= 1 && t <= 9 ? c[t] : 0; };
+    var pres = []; for (var t = 1; t <= 9; t++) if (c[t]) pres.push(t);
+    var R = {};
+    R.TERM = { S: [1, 9].filter(function (t) { return c[t] === 1 && !g(t === 1 ? 2 : 8); }) };
+    R.ISO1 = { S: pres.filter(function (t) { return c[t] === 1 && !g(t - 1) && !g(t + 1); }) };
+    var bestSc = -1, S = [], link = {};
+    pres.forEach(function (d) {
+      var r = c.slice(); r[d]--;
+      var ls = mustLinks(r, mainTargets, 1).filter(function (l) { return l.exact && (l.target.section || 'main') === 'main'; });
+      if (!ls.length) return;
+      var sc = ls[0].waits.length * 10 + (ls[0].target.star || 0); link[d] = ls[0];
+      if (sc > bestSc) { bestSc = sc; S = [d]; } else if (sc === bestSc) S.push(d);
+    });
+    R.MUST = { S: S, link: link };
+    R.NB = { S: pres.filter(function (t) { return t >= 2 && t <= 8 && c[t] === 2 && c[t - 1] === 1 && c[t + 1] === 1; }) };
+    R.KAN = { S: pres.filter(function (t) { return c[t] === 4; }) };
+    for (var k in R) R[k].applies = R[k].S.length > 0;
+    return R;
+  }
+  function discardAdvice(c, sel, targets) {
+    var main = targets.filter(function (t) { return (t.section || 'main') === 'main' && t.waits.length >= 2; });
+    var an = analyzeDiscards(c), by = {}; an.forEach(function (r) { by[r.discard] = r; });
+    var B = an.filter(function (r) { return r.best; }).map(function (r) { return r.discard; });
+    var b = B[0], R = discardRuleSets(c, main);
+    var inB = function (t) { return B.indexOf(t) >= 0; };
+    for (var k in R) R[k].hit = R[k].S.some(inB);
+    var res = function (d) { var r = by[d]; return r.waits.length ? '叫 ' + r.waits.join('、') + '，剩 ' + r.live + ' 隻' : '唔叫糊'; };
+    var lines = [], credited = {}, explained = {};
+    var after = function (d) { var x = c.slice(); x[d]--; return x; };
+    function exceptionLine(rule, t, ruleLink) {
+      var x = after(b), ls = mustLinks(x, targets, 2), line = { kind: 'exc', rule: rule, tile: t, best: b };
+      var head = '呢手係『' + DRULE_NAME[rule] + '』嘅例外：';
+      var own = (rule === 'TERM' || rule === 'ISO1') ? ls.filter(function (l) { return fromString(l.placed)[t] > 0; })[0] : null;
+      var lk = function (l) { return { shape: l.target.shape, placed: l.placed, waits: l.waits }; };
+      if (own) {
+        line.reason = 'part'; line.link = lk(own);
+        line.text = head + t + ' 雖然係孤張，但係留住佢可以組成 ' + shapeLabel(own.placed, own.target.shape) + '。打 ' + b + ' ' + res(b) + '；打 ' + t + ' ' + res(t) + '。';
+        return line;
+      }
+      var pre = rule === 'MUST' ? '打 ' + t + ' 雖然可以留低 ' + shapeLabel(ruleLink.placed, ruleLink.target.shape) + '，' + res(t) + '；但係' : '';
+      if (ls.length >= 2) {
+        var p0 = fromString(ls[0].placed), p1 = fromString(ls[1].placed), ov = false;
+        for (var i = 1; i <= 9; i++) if (p0[i] + p1[i] > x[i]) ov = true;
+        if (ov) {
+          line.reason = 'overlap'; line.links = ls.slice(0, 2).map(lk);
+          line.text = head + pre + '打 ' + b + ' 留低 ' + shapeLabel(ls[0].placed, ls[0].target.shape) + ' 同 ' + shapeLabel(ls[1].placed, ls[1].target.shape) + ' 疊埋，' + res(b) + (rule === 'MUST' ? '。' : '；打 ' + t + ' ' + res(t) + '。');
+          return line;
+        }
+      }
+      line.reason = 'compare';
+      var rb = by[b], rt = by[t], why = rb.live > rt.live ? '剩嘅隻數多啲' : '叫得多啲飛';
+      line.text = head + (rule === 'MUST' ? pre + '打 ' + b + ' ' + res(b) + '，' + why + '。' : '打 ' + b + ' ' + res(b) + '；打 ' + t + ' ' + res(t) + '。打 ' + b + ' ' + why + '。');
+      return line;
+    }
+    ['TERM', 'ISO1', 'MUST'].forEach(function (k) {
+      var r = R[k]; if (!r.applies) return;
+      if (k === 'ISO1' && R.TERM.applies && r.S.every(function (t) { return R.TERM.S.indexOf(t) >= 0; })) return; // same tile(s) as 孤張么九
+      if (r.hit) {
+        var d = r.S.filter(inB)[0]; credited[d] = 1;
+        var line = { kind: 'ok', rule: k, tile: d };
+        if (k === 'MUST') {
+          var l = r.link[d]; line.link = { shape: l.target.shape, placed: l.placed, waits: l.waits };
+          line.text = '呢手符合『' + DRULE_NAME[k] + '』：打 ' + d + ' 留低 ' + shapeLabel(l.placed, l.target.shape) + '＋齊晒嘅組，就啱：' + res(d) + '。';
+        } else line.text = '呢手符合『' + DRULE_NAME[k] + '』：打 ' + d + ' 就啱：' + res(d) + '。';
+        lines.push(line);
+      } else {
+        var t = r.S.slice().sort(function (p, q) { return an.indexOf(by[p]) - an.indexOf(by[q]); })[0];
+        if (explained[t]) return; explained[t] = 1;
+        lines.push(exceptionLine(k, t, k === 'MUST' ? r.link[t] : null));
+      }
+    });
+    if (R.NB.hit) {
+      var nb = R.NB.S.filter(inB)[0];
+      if (!credited[nb]) { credited[nb] = 1; lines.push({ kind: 'nb', rule: 'NB', tile: nb, text: '見到中間孖（' + (nb - 1) + nb + nb + (nb + 1) + '）：打中間嘅 ' + nb + ' 就啱：' + res(nb) + '。' }); }
+    }
+    if (!lines.length) lines.push({ kind: 'none', text: '呢手冇簡單教條，要逐隻數。' });
+    if (sel && !inB(sel)) {
+      var kan = c[sel] === 4;
+      lines.push({ kind: kan ? 'kan' : 'you', rule: kan ? 'KAN' : null, tile: sel, best: b,
+        text: (kan ? '4 隻一樣唔使急住打第 4 隻：' : '') + '你打 ' + sel + ' ' + res(sel) + '；打 ' + b + ' ' + res(b) + '。' });
+    }
+    return { best: B, rules: R, lines: lines };
+  }
+
   return {
     sum: sum, fromString: fromString, toString: toString, isComplete: isComplete, canMelds: canMelds,
     waits: waits, liveCount: liveCount, decompositions: decompositions, explain: explain,
@@ -498,7 +598,8 @@ var Core = (function () {
     randomDiscardProblem: randomDiscardProblem, naiveWaits: naiveWaits, buildLibrary: buildLibrary,
     enumerateVectors: enumerateVectors, mirror: mirror, connected: connected,
     maxGap: maxGap, classKey: classKey, tenpaiFromBlock: tenpaiFromBlock,
-    mustLinks: mustLinks, isRestComplete: isRestComplete, placements: placements
+    mustLinks: mustLinks, isRestComplete: isRestComplete, placements: placements,
+    discardRuleSets: discardRuleSets, discardAdvice: discardAdvice, shapeLabel: shapeLabel, DRULE_NAME: DRULE_NAME
   };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = Core;
@@ -787,6 +888,32 @@ function showTenpaiFb(){
 
 /* ================= 2. 打邊隻 (discard drill) ================= */
 var D = { diff:'dany', hand:null, sel:0, done:false, timer:null };
+var DRULES = ['孤張么九先打：孤零零嘅 1 或 9（隔籬冇 2／8）',
+  '孤張先打：隔籬兩邊都冇牌嘅單隻',
+  '留住必背牌型＋齊晒嘅組，揀叫得最多嗰個',
+  '見到中間孖（例如 3445），可以試吓打中間',
+  '答案多數係頭尾或者重複嗰隻；唔好急住打第 4 隻'];
+function drulesEl(){
+  store.ui = store.ui || {};
+  var d = h('details',{class:'drules',id:'dRules'});
+  if (store.ui.dRulesOpen !== false) d.open = true;
+  d.appendChild(h('summary',null,['一般而言（非必然），唔知打邊隻可以參考：']));
+  var ol = h('ol'); DRULES.forEach(function(t){ ol.appendChild(h('li',null,[t])); }); d.appendChild(ol);
+  d.addEventListener('toggle', function(){ store.ui = store.ui || {}; store.ui.dRulesOpen = d.open; save(); });
+  return d;
+}
+function whyEl(adv){
+  var box = h('div',{class:'why',id:'dWhy'});
+  box.appendChild(h('h4',null,['點解？']));
+  var ICON = {ok:'✅ ', exc:'⚠️ ', nb:'💡 ', none:'🔢 ', kan:'✋ ', you:'👉 '};
+  adv.lines.forEach(function(l){
+    var row = h('div',{class:'wl', 'data-kind':l.kind, 'data-rule':l.rule || ''},[ICON[l.kind] || '', l.text]);
+    var ls = l.links || (l.link ? [l.link] : []);
+    ls.forEach(function(k){ row.appendChild(h('span',{class:'go', onclick:function(){ gotoMust(k.shape); }},['睇 ' + k.shape + ' ›'])); });
+    box.appendChild(row);
+  });
+  return box;
+}
 var DDIFFS = [['dany','隨機'],['d23','最佳 2–3 飛'],['d45','最佳 4–5 飛'],['d6','最佳 6 飛+']];
 function renderDiscard(){
   var p = $('#tab-discard'); p.innerHTML = '';
@@ -797,6 +924,7 @@ function renderDiscard(){
     h('button',{class:'btn big',id:'dSubmit',onclick:submitDiscard},['打呢隻']),
     h('button',{class:'btn alt big',onclick:function(){ newDiscard(); }},['下一題']),
     h('span',{class:'timer',id:'dTimer'},['⏱ 0.0 秒']) ]));
+  p.appendChild(drulesEl());
   p.appendChild(h('div',{id:'dFb'}));
   if (!D.timer) D.timer = new Timer($('#dTimer')); else D.timer.el = $('#dTimer');
   if (!D.hand) newDiscard(); else { drawDiscard(); if (D.done) showDiscardFb(); }
@@ -844,6 +972,7 @@ function showDiscardFb(){
   fb.appendChild(h('h3',null,[ ok ? '✅ 正確！' : '❌ 唔係最好', '　用時 ' + fmtMs(ms) ]));
   fb.appendChild(h('div',null,['你打 ' + D.sel + '：' + (mine.waits.length ? '叫 ' + mine.waits.join('、') + '（' + FEI[mine.waits.length] + '飛，剩 ' + mine.live + ' 隻）' : '未叫糊（冇得叫）') ]));
   fb.appendChild(h('div',null,['最好打 ' + an.filter(function(r){return r.best;}).map(function(r){return r.discard;}).join(' 或 ') + '：叫 ' + best.waits.join('、') + '（' + FEI[best.waits.length] + '飛，剩 ' + best.live + ' 隻）']));
+  fb.appendChild(whyEl(Core.discardAdvice(D.hand, D.sel, LINKT)));
   var tb = h('table'), thead = h('tr',null,[h('th',null,['打']),h('th',null,['叫咩牌']),h('th',null,['叫幾飛']),h('th',null,['仲有幾多隻'])]);
   tb.appendChild(thead);
   an.forEach(function(r){
