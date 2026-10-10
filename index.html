@@ -100,7 +100,30 @@ tr.mine td{outline:2px solid #1e88e5;outline-offset:-2px}
 .mini{display:inline-flex;gap:1px;flex-wrap:wrap}
 .stat-num{font-size:26px;font-weight:bold}
 .kbd{font-family:Consolas,monospace;background:#eee;border-radius:4px;padding:0 5px;font-size:12px}
+.badge.stars{background:#fff8e1;color:#8a6d00;letter-spacing:-1px}
+.badge.basic{background:#e3f2fd;color:#0d47a1}
+.badge.adv{background:#ede7f6;color:#4527a0}
+.badge.name{background:#e8f5e9;color:#1b5e20}
+.must h2{font-size:18px;background:#0f3d2e;color:#fff;padding:6px 10px;border-radius:8px;margin:18px 0 8px}
+.must h2.basic{background:#1565c0}.must h2.adv{background:#5e35b1}.must h2.egg{background:#ad1457}
+.must h3{font-size:16px;margin:14px 0 4px;color:#0f3d2e}
+.fam{border:1px solid #cfd8cf;border-radius:12px;padding:6px 10px 10px;margin:12px 0;background:#f7faf5}
+.step{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;margin:10px 0 0 8px;font-size:15px;color:#333}
+.step .plus{font-weight:bold;color:#0f3d2e}
+.step .gain{font-weight:bold;color:#c62828}
+.step.branch{margin-left:28px}
+.indent{margin-left:22px}
+.step.branch + .card{margin-left:28px}
+details.src{margin-top:4px;font-size:13px;color:#555}
+details.src summary{cursor:pointer;color:#0f3d2e}
+details.src ul{margin:4px 0 0;padding-left:18px}
+details.src a{color:#1565c0;word-break:break-all}
+details.method{background:#fffbe6;border:1px solid #f0e2a8;border-radius:10px;padding:8px 12px;margin:8px 0;font-size:14px}
+details.method summary{cursor:pointer;font-weight:bold}
+details.method li{margin:3px 0}
+details.method a{color:#1565c0;word-break:break-all}
 footer{color:#cfe8d9;text-align:center;font-size:12px;padding:12px}
+@media (max-width:480px){ nav{padding:0 3px;gap:2px} nav button{padding:10px 6px;font-size:14px} }
 @media (min-width:700px){ .panel{border-radius:0 0 14px 14px} .hand .tile{--w:min(60px,calc((min(100vw,980px) - 90px)/17.6))} }
 </style>
 </head>
@@ -117,6 +140,7 @@ footer{color:#cfe8d9;text-align:center;font-size:12px;padding:12px}
 <nav id="nav">
   <button data-tab="tenpai">叫咩糊</button>
   <button data-tab="discard">打邊隻</button>
+  <button data-tab="must">必背牌型</button>
   <button data-tab="library">牌型圖鑑</button>
   <button data-tab="flash">閃卡</button>
   <button data-tab="stats">統計</button>
@@ -124,6 +148,7 @@ footer{color:#cfe8d9;text-align:center;font-size:12px;padding:12px}
 <main>
   <section class="panel" id="tab-tenpai"></section>
   <section class="panel" id="tab-discard" hidden></section>
+  <section class="panel must" id="tab-must" hidden></section>
   <section class="panel" id="tab-library" hidden></section>
   <section class="panel" id="tab-flash" hidden></section>
   <section class="panel" id="tab-stats" hidden></section>
@@ -316,13 +341,20 @@ var Core = (function () {
   function shift(c, d) { var r = [0,0,0,0,0,0,0,0,0,0]; for (var i = 1; i <= 9; i++) if (c[i]) { if (i + d < 1 || i + d > 9) return null; r[i + d] = c[i]; } return r; }
   function mirror(c) { var r = [0,0,0,0,0,0,0,0,0,0]; for (var i = 1; i <= 9; i++) r[10 - i] = c[i]; return r; }
   function relKey(c) { var s = span(c), k = ''; for (var i = s[0]; i <= s[1]; i++) k += c[i]; return k; }
-  // build library: for each translation class pick the placement with the most waits (lowest start on tie)
-  function buildLibrary(sizes, minWaits, min13) {
+  // largest run of empty ranks strictly inside the shape's span (0 = connected)
+  function maxGap(c) { var s = span(c), g = 0, run = 0; for (var i = s[0]; i <= s[1]; i++) { if (c[i]) run = 0; else { run++; if (run > g) g = run; } } return g; }
+  // translation/mirror-free class key, e.g. "7:3111111" (size : relative counts, gaps as 0)
+  function classKey(c) { var a = relKey(c), b = relKey(mirror(c)); return sum(c) + ':' + (a < b ? a : b); }
+  // build library: for each translation class pick the placement with the most waits (lowest start on tie).
+  // maxGapAllowed (default 1): shapes may contain single empty ranks (e.g. 3335678); 0 = connected only.
+  function buildLibrary(sizes, minWaits, min13, maxGapAllowed) {
     sizes = sizes || [2, 4, 5, 7, 8, 10, 13]; minWaits = minWaits || 2; min13 = min13 || 6;
+    if (maxGapAllowed === undefined) maxGapAllowed = 1;
     var classes = {}, list = [];
     sizes.forEach(function (n) {
       enumerateVectors(n, function (c) {
-        if (!connected(c)) return;
+        var gap = maxGap(c);
+        if (gap > maxGapAllowed) return;
         var rk = relKey(c);
         var s = span(c);
         if (classes[n + ':' + rk]) return;
@@ -336,16 +368,25 @@ var Core = (function () {
         classes[n + ':' + rk] = true;
         if (best.w.length < minWaits) return;
         if (n >= 13 && best.w.length < min13) return;
-        // skip pure "complete meld + smaller shape" redundancy: removing a meld leaves a connected shape with same waits
-        var redundant = false;
+        // skip "complete meld + smaller shape" redundancy: removing a meld leaves a shape (connected,
+        // or for gapped shapes also gapped-by-one) with the same waits
+        var redundant = false, okRest = function (c2) { return gap ? maxGap(c2) <= maxGapAllowed : connected(c2); };
         for (var m = 0; m < MELDS.length && !redundant; m++) {
           var md = MELDS[m], c2 = best.c.slice(), ok = true;
           md.forEach(function (t) { c2[t]--; if (c2[t] < 0) ok = false; });
-          if (!ok || sum(c2) === 0 || !connected(c2)) continue;
+          if (!ok || sum(c2) === 0 || !okRest(c2)) continue;
           if (waits(c2).join() === best.w.join()) redundant = true;
         }
+        // gapped shapes: an isolated pair that is just the pair (e.g. 23 + 55) is redundant too
+        if (gap && !redundant && n % 3 === 1) {
+          for (var t = 1; t <= 9 && !redundant; t++) {
+            if (best.c[t] !== 2 || best.c[t - 1] || (t < 9 && best.c[t + 1])) continue;
+            var c3 = best.c.slice(); c3[t] = 0;
+            if (waits(c3).join() === best.w.join()) redundant = true;
+          }
+        }
         if (redundant) return;
-        list.push({ shape: toString(best.c), size: n, pairInside: n % 3 === 1, waits: best.w, rel: rk });
+        list.push({ shape: toString(best.c), size: n, pairInside: n % 3 === 1, waits: best.w, rel: rk, gapped: gap > 0 });
       });
     });
     // mirror dedupe: keep one of shape / its mirror image
@@ -358,13 +399,48 @@ var Core = (function () {
     out.sort(function (a, b) { return (a.waits.length - b.waits.length) || (a.size - b.size) || (a.shape < b.shape ? -1 : 1); });
     return out;
   }
+  // build a full tenpai hand (nMelds*3+1 tiles) that contains `shape` (any shift / mirror) as its
+  // wait-generating block: the rest is complete melds (+ a pair when the shape has no pair inside)
+  // and the hand's waits equal the block's waits. Returns null if no luck within maxTries.
+  function tenpaiFromBlock(shape, nM, rng, maxTries) {
+    rng = rng || Math.random; maxTries = maxTries || 300;
+    var base = fromString(shape), n = sum(base), target = nM * 3 + 1;
+    if (n > target || (target - n) % 3 === 1) return null;
+    var need = target - n, needPair = (need % 3) === 2, needMelds = Math.floor(need / 3);
+    var cands = [], want = waits(base).length;
+    [base, mirror(base)].forEach(function (b) {
+      var s = span(b);
+      for (var st = 1; st + (s[1] - s[0]) <= 9; st++) { var cc = shift(b, st - s[0]); if (cc && waits(cc).length === want) cands.push(cc); }
+    });
+    if (!cands.length) return null;
+    for (var tr = 0; tr < maxTries; tr++) {
+      var c = cands[randInt(rng, cands.length)].slice(), ok = true;
+      if (needPair) { var p = 1 + randInt(rng, 9); c[p] += 2; if (c[p] > 4) ok = false; }
+      for (var k = 0; k < needMelds && ok; k++) {
+        var md = MELDS[randInt(rng, MELDS.length)];
+        md.forEach(function (t) { c[t]++; if (c[t] > 4) ok = false; });
+      }
+      if (!ok) continue;
+      // the extra tiles must neither add nor remove waits relative to the block itself
+      var w = waits(c), blk = null;
+      for (var q = 0; q < cands.length; q++) { var d = c.slice(), okq = true; for (var i = 1; i <= 9; i++) { d[i] -= cands[q][i]; if (d[i] < 0) okq = false; } if (okq && isRestComplete(d, needPair)) { var bw = waits(cands[q]).filter(function (t) { return c[t] < 4; }); if (bw.join() === w.join() && w.length >= 1) { blk = cands[q]; break; } } }
+      if (blk) { c.block = toString(blk); return c; }
+    }
+    return null;
+  }
+  function isRestComplete(d, withPair) {
+    var n = sum(d); if (!n) return !withPair;
+    if (withPair) { for (var i = 1; i <= 9; i++) if (d[i] >= 2) { d[i] -= 2; var ok = canMelds(d, 1); d[i] += 2; if (ok) return true; } return false; }
+    return canMelds(d, 1);
+  }
 
   return {
     sum: sum, fromString: fromString, toString: toString, isComplete: isComplete, canMelds: canMelds,
     waits: waits, liveCount: liveCount, decompositions: decompositions, explain: explain,
     analyzeDiscards: analyzeDiscards, randomComplete: randomComplete, randomTenpai: randomTenpai,
     randomDiscardProblem: randomDiscardProblem, naiveWaits: naiveWaits, buildLibrary: buildLibrary,
-    enumerateVectors: enumerateVectors, mirror: mirror, connected: connected
+    enumerateVectors: enumerateVectors, mirror: mirror, connected: connected,
+    maxGap: maxGap, classKey: classKey, tenpaiFromBlock: tenpaiFromBlock
   };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = Core;
@@ -489,6 +565,20 @@ function segmented(options, cur, onChange){
 }
 function fmtMs(ms){ return (ms/1000).toFixed(1) + ' 秒'; }
 
+/* ---------- 必背牌型 data + stars ---------- */
+var MUST = {"method":["星級主要睇外部來源：有幾多個獨立來源（網站、書、維基、教學 app）當呢個牌型係核心，每個 +1 分；有「基本／常見／重要」等字眼 +0.5；只列做進階／少見 +0.25。","兩個「7 隻牌型全表」（てりやき、kadoblog）內容一樣，合埋只算一票；網頁打唔開、只見摘要嘅來源算半票。","分數 ≥6 → 5⭐，≥4 → 4⭐，≥2 → 3⭐，≥1 → 2⭐，其餘 1⭐。","出現率只做輔助：窮舉所有 13 隻（26,003 手）同 16 隻（55,134 手）清一色叫糊牌，按牌嘅組合數加權，逐組拆走唔影響叫糊嘅牌，剩低嘅最細牌型就係「叫糊方塊」。分數就快升級又夠常見（≥0.4%）就 +1⭐。","最後有 8 個審稿調整（例如 2223444、2344567、2223 升 5⭐），每個都有理由。基本功、10 隻以上（進階）同九蓮（彩蛋）唔計入必背星級。"],"sources":[{"id":"MJLG","label":"MJ-LG 麻雀學校：清一色叫糊表（日文）","url":"https://mj-lg.com/school/chinitsu_theory.html"},{"id":"MJST","label":"麻雀 Station：多面叫糊介紹（日文）","url":"https://mj-station.net/rule/machi1/"},{"id":"TERI","label":"てりやき麻雀教室：清一色 7 隻牌型 19 款（日文）","url":"https://teriyaki-mahjong.com/chinitsu-naki-kotsu/"},{"id":"MJW","label":"麻雀ウォッチ：7 隻牌型丸暗記（日文）","url":"https://mj-news.net/mj-course/mj-tips/20210805163814"},{"id":"FUKU","label":"福地誠《これだけで勝てる！麻雀の基本形80》竹書房 2014（ISBN 9784812488249，經うらなか書房轉述）","url":"https://uranaka-shobou.com/mahjong-7machi/"},{"id":"KADO","label":"kadoblog：7 隻牌型一覽 20 款（日文）","url":"https://www.mahjong-saikou.com/7sheet/"},{"id":"YMD","label":"ヤマダミキ note：10 隻牌型 69 款（日文）","url":"https://note.com/ymdmk1998/n/n72563b4202c9"},{"id":"KONO","label":"アットランタイム：10 隻牌型（日文）","url":"https://blog.konoui.dev/post/mj-ten-pieces/"},{"id":"WIKIB","label":"維基教科書：日本麻將中階・多面叫糊（中文）","url":"https://zh.wikibooks.org/zh-hant/%E6%97%A5%E6%9C%AC%E9%BA%BB%E5%B0%87%E4%B8%AD%E9%9A%8E/%E5%A4%9A%E9%9D%A2%E8%81%BD%E7%9A%84%E5%88%A4%E6%96%B7"},{"id":"UPTO","label":"UpToGo：清一色叫幾多隻（台灣）","url":"https://uptogo.com.tw/%E9%81%8A%E6%88%B2/%E6%B8%85%E4%B8%80%E8%89%B2%E8%81%BD%E5%B9%BE%E5%80%8B%E6%B4%9E%EF%BC%9F/"},{"id":"BEGI","label":"beginners.biz：麻雀基本叫糊（日文，網頁打唔開，只見搜尋摘要，算半票）","url":"http://beginners.biz/kihon/kihon11.html"}],"inaccessible":["riichi.wiki「Complex waits」（Cloudflare 擋住）","beginners.biz（網頁打唔開，只見摘要）","麻雀ドラゴン、mjsdb 7 隻牌型頁（牌全係圖，讀唔到）","肥え×《麻雀 多面待ちに強くなる本》鉄人社 2025（只見書目）","渋川難波《チンイツトレーニング》竹書房 2025（只見目錄）","Makaron131 清一色小測（只見標題）","ppnav／applion／紀伊國屋（連線失敗）","教學 app：hfuku、mahjong.org、いかさぽ（只有按隻數分級，冇點名牌型，唔計分）"],"basics":[{"shape":"5","name":"吊眼","note":"手上單獨一隻，摸返同一隻就成對眼。","extra":"","waits":[5]},{"shape":"12","name":"叫邊","note":"12 只可以叫 3（89 就只叫 7）。","extra":"89","waits":[3],"extraWaits":[7]},{"shape":"13","name":"叫嵌","note":"13 中間缺 2，只叫 2。","extra":"","waits":[2]},{"shape":"23","name":"兩頭搭","note":"前後各叫一隻：23 叫 1、4。","extra":"","waits":[1,4]},{"shape":"2255","name":"對碰","note":"兩對任何一對變碰，另一對做眼：叫 2、5。","extra":"","waits":[2,5]},{"shape":"2234","name":"亞兩頭","note":"22 做眼 + 34 兩頭（叫 2、5），或 234 + 2 吊眼。","extra":"","waits":[2,5]}],"families":[{"id":"F1","name":"五隻連家族（147 三飛）","root":"23","rootBasic":"兩頭搭","steps":[{"parent":"23","add":"上","group":"456","child":"23456","added":[7],"lost":[],"branch":false},{"parent":"23456","add":"眼","group":"22","child":"2223456","added":[3,6],"lost":[],"branch":false},{"parent":"2223456","add":"碰","group":"777","child":"2223456777","added":[2,5,8],"lost":[],"branch":false},{"parent":"23456","add":"眼","group":"33","child":"2333456","added":[2],"lost":[],"branch":true}]},{"id":"F2","name":"四隻連 → 七隻連","root":"2345","rootBasic":null,"steps":[{"parent":"2345","add":"上","group":"678","child":"2345678","added":[8],"lost":[],"branch":false},{"parent":"2345","add":"上","group":"567","child":"2345567","added":[8],"lost":[],"branch":true},{"parent":"2345678","add":"碰","group":"111","child":"1112345678","added":[3,6,9],"lost":[],"branch":false}]},{"id":"F3","name":"碰黐一隻家族","root":"2223","rootBasic":null,"steps":[{"parent":"2223","add":"碰","group":"444","child":"2223444","added":[2,5],"lost":[],"branch":false},{"parent":"2223","add":"上","group":"345","child":"2223345","added":[6],"lost":[],"branch":false},{"parent":"2223","add":"上","group":"456","child":"2223456","added":[6,7],"lost":[],"branch":false},{"parent":"3334","add":"碰","group":"222","child":"2223334","added":[3],"lost":[],"branch":false},{"parent":"2223444","add":"上","group":"567","child":"2223444567","added":[8],"lost":[],"branch":false}]},{"id":"F4","name":"碰隔一隻家族","root":"3335","rootBasic":null,"steps":[{"parent":"3335","add":"碰","group":"777","child":"3335777","added":[6],"lost":[],"branch":false},{"parent":"3335","add":"上","group":"678","child":"3335678","added":[8],"lost":[],"branch":false},{"parent":"3335","add":"上","group":"567","child":"3335567","added":[8],"lost":[],"branch":false},{"parent":"2224","add":"碰","group":"333","child":"2223334","added":[2,5],"lost":[],"branch":false},{"parent":"2224","add":"上","group":"345","child":"2223445","added":[6],"lost":[],"branch":false}]},{"id":"F5","name":"對碰家族","root":"2244","rootBasic":"對碰","steps":[{"parent":"2244","add":"碰","group":"333","child":"2233344","added":[3],"lost":[],"branch":false},{"parent":"2244","add":"上","group":"234","child":"2223444","added":[1,3,5],"lost":[],"branch":false},{"parent":"3344","add":"碰","group":"222","child":"2223344","added":[2,5],"lost":[],"branch":false}]},{"id":"F6","name":"亞兩頭家族","root":"2234","rootBasic":"亞兩頭","steps":[{"parent":"2234","add":"上","group":"234","child":"2223344","added":[3,4],"lost":[],"branch":false},{"parent":"2234","add":"碰","group":"333","child":"2233334","added":[1,4],"lost":[],"branch":false},{"parent":"3345","add":"碰","group":"222","child":"2223345","added":[1,4],"lost":[],"branch":false},{"parent":"2344","add":"上","group":"567","child":"2344567","added":[7],"lost":[],"branch":false}]}],"shapes":{"5:11111":{"shape":"23456","key":"5:11111","size":5,"waits":[1,4,7],"star":5,"name":"五隻連（147 三飛）","section":"main","reason":"6 個來源都當係基本多叫牌型；13 隻牌出現率 9.1%，係最常見嘅多叫形狀。","core":["BEGI","FUKU","MJST","TERI","UPTO","WIKIB"],"listed":[],"freq13":9.135,"gapped":false},"7:313":{"shape":"2223444","key":"7:313","size":7,"waits":[1,2,3,4,5],"star":5,"name":"碰夾一隻（三明治）","section":"main","reason":"「三明治」：碰夾一隻，1 至 5 全叫；係最多來源點名嘅單一牌型。","core":["KADO","MJLG","MJW","TERI","UPTO","WIKIB"],"listed":["FUKU"],"freq13":0.214,"gapped":false},"7:1111111":{"shape":"2345678","key":"7:1111111","size":7,"waits":[2,5,8],"star":5,"name":"七隻連（258）","section":"main","reason":"七隻連住叫 2、5、8（頭、中、尾）；5 個來源，出現率 2.5%。","core":["FUKU","KADO","MJW","UPTO","WIKIB"],"listed":[],"freq13":2.479,"gapped":false},"7:1123":{"shape":"2223345","key":"7:1123","size":7,"waits":[1,3,4,6],"star":5,"name":"碰黐亞兩頭","section":"main","reason":"碰黐亞兩頭，叫四飛；6 個來源當核心。","core":["FUKU","KADO","MJW","TERI","UPTO","WIKIB"],"listed":[],"freq13":1.128,"gapped":false},"7:111211":{"shape":"2344567","key":"7:111211","size":7,"waits":[1,4,7],"star":5,"name":"連牌中間孖一隻","section":"main","reason":"7 隻牌型之中出現率最高（2.7%），有來源直接話「好常見」。","core":["FUKU","KADO","MJW","TERI","WIKIB"],"listed":[],"freq13":2.741,"gapped":false},"4:13":{"shape":"2223","key":"4:13","size":4,"waits":[1,3,4],"star":5,"name":"碰黐一隻","section":"main","reason":"碰家族嘅根：4 隻牌叫三飛；4 個來源，出現率 2.0%。","core":["FUKU","MJLG","MJST","WIKIB"],"listed":[],"freq13":2.024,"gapped":false},"7:1213":{"shape":"2223445","key":"7:1213","size":7,"waits":[3,4,6],"star":4,"name":"碰黐中間孖","section":"main","reason":"222 + 3445，叫 3、4、6；5 個來源當核心。","core":["FUKU","KADO","MJW","TERI","WIKIB"],"listed":[],"freq13":0.677,"gapped":false},"7:111103":{"shape":"3335678","key":"7:111103","size":7,"waits":[4,5,8],"star":4,"name":"碰隔一隻＋四隻連","section":"main","reason":"碰隔一隻再加四隻連；5 個來源，福地書列為「出現率高」。","core":["FUKU","KADO","MJW","TERI","WIKIB"],"listed":[],"freq13":0.45,"gapped":true},"7:133":{"shape":"2223334","key":"7:133","size":7,"waits":[2,3,4,5],"star":4,"name":"兩碰連住黐一隻","section":"main","reason":"兩組碰連住再黐一隻，叫四飛；5 個來源。","core":["KADO","MJW","TERI","UPTO","WIKIB"],"listed":["FUKU"],"freq13":0.499,"gapped":false},"7:232":{"shape":"2233344","key":"7:232","size":7,"waits":[2,3,4],"star":4,"name":"對碰夾碰","section":"main","reason":"對碰夾住一組碰，叫 2、3、4；5 個來源。","core":["FUKU","KADO","MJW","TERI","WIKIB"],"listed":[],"freq13":0.81,"gapped":false},"7:223":{"shape":"2223344","key":"7:223","size":7,"waits":[2,3,4,5],"star":4,"name":"碰黐兩對","section":"main","reason":"碰黐兩對，叫四飛；5 個來源。","core":["FUKU","KADO","MJW","TERI","WIKIB"],"listed":[],"freq13":0.611,"gapped":false},"7:101113":{"shape":"3334568","key":"7:101113","size":7,"waits":[7,8],"star":4,"name":"碰黐一隻＋叫嵌","section":"main","reason":"碰黐一隻 + 叫嵌，叫 7、8；4 個來源，福地書列為「出現率高」。","core":["FUKU","KADO","MJW","TERI"],"listed":[],"freq13":0.422,"gapped":true},"7:11203":{"shape":"3335567","key":"7:11203","size":7,"waits":[4,5,8],"star":4,"name":"碰隔一隻＋中間孖","section":"main","reason":"碰隔一隻 + 中間孖，叫 4、5、8；4 個來源，福地書列為「出現率高」。","core":["FUKU","KADO","MJW","TERI"],"listed":[],"freq13":0.419,"gapped":true},"7:11131":{"shape":"2333456","key":"7:11131","size":7,"waits":[1,2,4,7],"star":4,"name":"眼碰＋五隻連","section":"main","reason":"眼碰 + 五隻連，叫四飛；4 個來源，出現率 1.4%。","core":["KADO","MJW","TERI","WIKIB"],"listed":["FUKU"],"freq13":1.404,"gapped":false},"4:1111":{"shape":"2345","key":"4:1111","size":4,"waits":[2,5],"star":4,"name":"四隻連（兩邊吊眼）","section":"main","reason":"兩邊吊眼（234 吊 5 / 345 吊 2）；七隻連家族嘅根，基本教材都有。","core":["BEGI","MJLG","MJST"],"listed":[],"freq13":1.553,"gapped":false},"7:11113":{"shape":"2223456","key":"7:11113","size":7,"waits":[1,3,4,6,7],"star":4,"name":"碰黐四隻連","section":"main","reason":"碰黐四隻連，叫五飛；出現率 1.2%，3 個來源當核心。","core":["KADO","MJW","TERI"],"listed":["FUKU"],"freq13":1.218,"gapped":false},"8:233":{"shape":"22233344","key":"8:233","size":8,"waits":[1,4],"star":3,"name":"兩碰兩頭","section":"main","reason":"3 個來源當核心。","core":["KONO","WIKIB","YMD"],"listed":[],"freq13":0,"gapped":false},"7:30103":{"shape":"3335777","key":"7:30103","size":7,"waits":[4,5,6],"star":3,"name":"兩碰夾一隻","section":"main","reason":"4 個來源當核心；另 1 個列做進階／少見；13 隻牌出現率 0.058%。","core":["KADO","MJW","TERI","WIKIB"],"listed":["FUKU"],"freq13":0.058,"gapped":true},"10:221113":{"shape":"2223456677","key":"10:221113","size":10,"waits":[5,6,7,8],"star":3,"name":"","section":"adv","reason":"2 個來源當核心；13 隻牌出現率 0.471%。","core":["KONO","YMD"],"listed":[],"freq13":0.471,"gapped":false},"10:22222":{"shape":"2233445566","key":"10:22222","size":10,"waits":[2,3,5,6],"star":3,"name":"","section":"adv","reason":"2 個來源當核心；13 隻牌出現率 0.468%。","core":["KONO","YMD"],"listed":[],"freq13":0.468,"gapped":false},"10:21232":{"shape":"2233344566","key":"10:21232","size":10,"waits":[1,4,5],"star":3,"name":"","section":"adv","reason":"2 個來源當核心；13 隻牌出現率 0.416%。","core":["KONO","YMD"],"listed":[],"freq13":0.416,"gapped":false},"10:21313":{"shape":"2223444566","key":"10:21313","size":10,"waits":[4,5,6],"star":3,"name":"","section":"adv","reason":"2 個來源當核心；13 隻牌出現率 0.202%。","core":["KONO","YMD"],"listed":[],"freq13":0.202,"gapped":false},"10:101332":{"shape":"2233344457","key":"10:101332","size":10,"waits":[6,7],"star":3,"name":"","section":"adv","reason":"2 個來源當核心；13 隻牌出現率 0.067%。","core":["KONO","YMD"],"listed":[],"freq13":0.067,"gapped":true},"10:2242":{"shape":"2233334455","key":"10:2242","size":10,"waits":[2,5,6],"star":3,"name":"","section":"adv","reason":"2 個來源當核心；13 隻牌出現率 0.032%。","core":["KONO","YMD"],"listed":[],"freq13":0.032,"gapped":false},"8:2222":{"shape":"22334455","key":"8:2222","size":8,"waits":[2,5],"star":3,"name":"","section":"adv","reason":"2 個來源當核心；13 隻牌出現率 0.012%。","core":["KONO","YMD"],"listed":[],"freq13":0.012,"gapped":false},"5:113":{"shape":"23444","key":"5:113","size":5,"waits":[1,4],"star":3,"name":"兩頭黐碰","section":"main","reason":"4 個來源當核心。","core":["KADO","MJW","TERI","WIKIB"],"listed":[],"freq13":0,"gapped":false},"10:311113":{"shape":"2223456777","key":"10:311113","size":10,"waits":[1,2,3,4,5,6,7,8],"star":3,"name":"兩碰夾上（八飛）","section":"adv","reason":"2 個來源當核心；13 隻牌出現率 0.11%。","core":["UPTO","YMD"],"listed":[],"freq13":0.11,"gapped":false},"10:101111113":{"shape":"1112345679","key":"10:101111113","size":10,"waits":[8,9],"star":3,"name":"","section":"adv","reason":"1 個來源當核心；另 1 個列做進階／少見；13 隻牌出現率 0.261%。","core":["KONO"],"listed":["YMD"],"freq13":0.261,"gapped":true},"4:103":{"shape":"3335","key":"4:103","size":4,"waits":[4,5],"star":3,"name":"碰隔一隻","section":"main","reason":"2 個來源當核心；13 隻牌出現率 1.721%。","core":["FUKU","MJST"],"listed":[],"freq13":1.721,"gapped":true},"7:142":{"shape":"2233334","key":"7:142","size":7,"waits":[1,2,4,5],"star":3,"name":"雙碰亞兩頭","section":"main","reason":"3 個來源當核心；13 隻牌出現率 0.106%。","core":["KADO","TERI","WIKIB"],"listed":[],"freq13":0.106,"gapped":false},"7:214":{"shape":"2222344","key":"7:214","size":7,"waits":[1,3,4],"star":3,"name":"四隻同款黐兩頭","section":"main","reason":"3 個來源當核心；13 隻牌出現率 0.088%。","core":["KADO","TERI","WIKIB"],"listed":[],"freq13":0.088,"gapped":false},"13:311111113":{"shape":"1112345678999","key":"13:311111113","size":13,"waits":[1,2,3,4,5,6,7,8,9],"star":3,"name":"九蓮寶燈","section":"egg","reason":"九蓮寶燈：1 至 9 全部食得。好出名但好少見（約 0.035%），當彩蛋睇。","core":["UPTO","WIKIB"],"listed":[],"freq13":0.035,"gapped":false},"7:1132":{"shape":"2233345","key":"7:1132","size":7,"waits":[2,3,6],"star":3,"name":"對子梯級","section":"main","reason":"1 個來源當核心；13 隻牌出現率 1.601%。","core":["MJLG"],"listed":[],"freq13":1.601,"gapped":false},"10:2233":{"shape":"2223334455","key":"10:2233","size":10,"waits":[1,3,4,5,6],"star":2,"name":"","section":"adv","reason":"1 個來源當核心；另 1 個列做進階／少見；13 隻牌出現率 0.073%。","core":["YMD"],"listed":["MJLG"],"freq13":0.073,"gapped":false},"10:131113":{"shape":"2223456667","key":"10:131113","size":10,"waits":[2,5,6,7,8],"star":2,"name":"","section":"adv","reason":"1 個來源當核心；13 隻牌出現率 0.153%。","core":["YMD"],"listed":[],"freq13":0.153,"gapped":false},"10:2323":{"shape":"2223344455","key":"10:2323","size":10,"waits":[3,4,5,6],"star":2,"name":"","section":"adv","reason":"1 個來源當核心；13 隻牌出現率 0.08%。","core":["YMD"],"listed":[],"freq13":0.08,"gapped":false},"10:22303":{"shape":"2224445566","key":"10:22303","size":10,"waits":[3,4,5,6,7],"star":2,"name":"","section":"adv","reason":"1 個來源當核心；13 隻牌出現率 0.067%。","core":["YMD"],"listed":[],"freq13":0.067,"gapped":true},"10:30101113":{"shape":"2223457999","key":"10:30101113","size":10,"waits":[6,7,8],"star":2,"name":"","section":"adv","reason":"1 個來源當核心；13 隻牌出現率 0.026%。","core":["YMD"],"listed":[],"freq13":0.026,"gapped":true},"10:30111103":{"shape":"2224567999","key":"10:30111103","size":10,"waits":[3,4,7,8],"star":2,"name":"","section":"adv","reason":"1 個來源當核心；13 隻牌出現率 0.018%。","core":["YMD"],"listed":[],"freq13":0.018,"gapped":true},"7:1222":{"shape":"2233445","key":"7:1222","size":7,"waits":[2,5],"star":2,"name":"","section":"main","reason":"1 個來源當核心；另 1 個列做進階／少見。","core":["KADO"],"listed":["MJLG"],"freq13":0,"gapped":false},"10:11111113":{"shape":"2223456789","key":"10:11111113","size":10,"waits":[1,3,4,6,7,9],"star":2,"name":"碰＋七隻連","section":"adv","reason":"1 個來源當核心；13 隻牌出現率 0.773%。","core":["UPTO"],"listed":[],"freq13":0.773,"gapped":false},"10:111111103":{"shape":"1113456789","key":"10:111111103","size":10,"waits":[2,3,6,9],"star":2,"name":"碰 111 + 七隻連","section":"adv","reason":"1 個來源當核心；13 隻牌出現率 0.289%。","core":["WIKIB"],"listed":[],"freq13":0.289,"gapped":true},"10:111313":{"shape":"2223444567","key":"10:111313","size":10,"waits":[1,2,3,4,5,8],"star":2,"name":"三明治＋上","section":"adv","reason":"1 個來源當核心；13 隻牌出現率 0.189%。","core":["UPTO"],"listed":[],"freq13":0.189,"gapped":false},"10:111101113":{"shape":"1112346789","key":"10:111101113","size":10,"waits":[5,6,9],"star":2,"name":"","section":"adv","reason":"1 個來源當核心；13 隻牌出現率 0.165%。","core":["WIKIB"],"listed":[],"freq13":0.165,"gapped":true},"7:1141":{"shape":"2333345","key":"7:1141","size":7,"waits":[1,2,4,5],"star":2,"name":"四隻連夾碰","section":"main","reason":"2 個來源當核心；13 隻牌出現率 0.078%。","core":["KADO","TERI"],"listed":[],"freq13":0.078,"gapped":false},"13:222223":{"shape":"2223344556677","key":"13:222223","size":13,"waits":[2,3,4,5,6,7,8],"star":2,"name":"","section":"adv","reason":"1 個來源當核心；13 隻牌出現率 0.033%。","core":["UPTO"],"listed":[],"freq13":0.033,"gapped":false},"7:1231":{"shape":"3445556","key":"7:1231","size":7,"waits":[2,5],"star":2,"name":"","section":"main","reason":"1 個來源當核心。","core":["KADO"],"listed":[],"freq13":0,"gapped":false}},"egg":{"shape":"1112345678999","from":"1112345678","add":"碰","group":"999","added":[1,4,7]}};
+var SRCBY = {}; MUST.sources.forEach(function(s){ SRCBY[s.id] = s; });
+function mustOf(shape){ return MUST.shapes[Core.classKey(Core.fromString(shape))] || null; }
+var BASICKEYS = {}; MUST.basics.map(function(b){ return b.shape; }).concat(['2233','2244']).forEach(function(x){ BASICKEYS[Core.classKey(Core.fromString(x))] = true; });
+function isBasic(shape){ return !!BASICKEYS[Core.classKey(Core.fromString(shape))]; }
+function starOf(shape){ var m = mustOf(shape); return m ? m.star : 1; }
+function starStr(n){ return new Array(n + 1).join('⭐'); }
+function starBadge(n){ return h('span',{class:'badge stars', title:n + ' 星'},[starStr(n)]); }
+var STARF = [['all','全部'],['s4','4⭐以上'],['s5','只出 5⭐']];
+function starMin(k){ return k === 's5' ? 5 : k === 's4' ? 4 : 0; }
+function mustPool(min){ return Object.keys(MUST.shapes).map(function(k){ return MUST.shapes[k]; })
+  .filter(function(m){ return m.section === 'main' && m.star >= min; }); }
+
 var DIFFS = [['d23','2–3 飛',2,3],['d45','4–5 飛',4,5],['d6','6 飛+',6,9],['dany','隨機',2,9]];
 function diffRange(k){ for (var i=0;i<DIFFS.length;i++) if (DIFFS[i][0]===k) return [DIFFS[i][2],DIFFS[i][3]]; return [2,9]; }
 
@@ -498,11 +588,14 @@ Timer.prototype.start = function(){ var self=this; this.stop(); this.t0 = perfor
 Timer.prototype.stop = function(){ if (this.iv){ clearInterval(this.iv); this.iv = null; } var ms = performance.now() - this.t0; this.ms = ms; this.el.textContent = '⏱ ' + fmtMs(ms); return ms; };
 
 /* ================= 1. 叫咩糊 ================= */
-var T = { diff:'d23', hand:null, picks:{}, done:false, timer:null, fixedHand:null };
+var T = { diff:'d23', star:'all', hand:null, block:null, blockPlaced:null, picks:{}, done:false, timer:null, fixedHand:null };
 function renderTenpai(){
   var p = $('#tab-tenpai'); p.innerHTML = '';
   p.appendChild(h('div',{class:'row'},[ h('span',{class:'lbl'},['難度（叫幾多飛）']),
     segmented(DIFFS.map(function(d){return [d[0],d[1]];}), T.diff, function(v){ T.diff = v; newTenpai(); }) ]));
+  p.appendChild(h('div',{class:'row'},[ h('span',{class:'lbl'},['必背牌型']),
+    segmented(STARF, T.star, function(v){ T.star = v; newTenpai(); }),
+    h('span',{class:'hint'},[T.star === 'all' ? '' : '（揀咗星級：手牌會包住一個' + (T.star === 's5' ? ' 5⭐' : ' 4⭐ 以上') + '牌型，難度唔計）']) ]));
   p.appendChild(h('div',{class:'hint'},['睇手牌，揀晒所有食糊嘅牌（可以揀多隻），再按「交卷」。鍵盤：', h('span',{class:'kbd'},['1–9']),' 揀牌，',h('span',{class:'kbd'},['Enter']),' 交卷 / 下一題。']));
   var felt = h('div',{class:'table-felt'},[ h('div',{class:'hand',id:'tHand'}), h('div',{class:'notation',id:'tNote'}) ]);
   p.appendChild(felt);
@@ -517,8 +610,19 @@ function renderTenpai(){
 }
 function newTenpai(fixed){
   var r = diffRange(T.diff);
-  T.hand = fixed ? Core.fromString(fixed) : Core.randomTenpai(nMelds(), r[0], r[1]);
+  T.block = null; T.blockPlaced = null; T.hand = null;
+  if (fixed) T.hand = Core.fromString(fixed);
+  else if (T.star !== 'all'){
+    var pool = mustPool(starMin(T.star)).filter(function(m){ return m.size <= nMelds()*3 + 1; });
+    for (var tries = 0; tries < 12 && !T.hand && pool.length; tries++){
+      var m = pool[Math.floor(Math.random() * pool.length)];
+      var hh = Core.tenpaiFromBlock(m.shape, nMelds());
+      if (hh){ T.hand = hh; T.block = m; T.blockPlaced = hh.block || m.shape; }
+    }
+  }
+  if (!T.hand) T.hand = Core.randomTenpai(nMelds(), r[0], r[1]);
   T.picks = {}; T.done = false;
+  if (T.star !== 'all' && $('#tab-tenpai .row .hint')) $('#tab-tenpai .row .hint').textContent = '（揀咗星級：手牌會包住一個' + (T.star === 's5' ? ' 5⭐' : ' 4⭐ 以上') + '牌型，難度唔計）';
   drawTenpai(); T.timer.start();
 }
 function drawTenpai(){
@@ -553,7 +657,7 @@ function submitTenpai(){
   var missed = w.filter(function(x){ return picks.indexOf(x) < 0; });
   var wrong = picks.filter(function(x){ return w.indexOf(x) < 0; });
   var ok = !missed.length && !wrong.length;
-  record('tenpai|' + store.settings.size + '|' + T.diff, ok, ms);
+  record('tenpai|' + store.settings.size + '|' + (T.star !== 'all' && T.block ? T.star : T.diff), ok, ms);
   if (!ok) addMistake({mode:'tenpai', hand:Core.toString(T.hand), missed:missed, wrong:wrong, t:Date.now()});
   T.lastMs = ms; drawTenpai(); showTenpaiFb();
 }
@@ -568,6 +672,9 @@ function showTenpaiFb(){
   var fb = h('div',{class:'fb ' + (ok ? 'ok' : 'bad')});
   fb.appendChild(h('h3',null,[ ok ? '✅ 全對！' : '❌ 未完全啱', '　用時 ' + fmtMs(ms) ]));
   fb.appendChild(h('div',null,[ '答案：叫 ' + FEI[w.length] + ' 飛（' + w.join('、') + '），合共剩 ' + live + ' 隻。' ]));
+  if (T.block){ var bp = T.blockPlaced || T.block.shape;
+    fb.appendChild(h('div',null,[ '入面嘅必背牌型：', tilesRow(countsToList(Core.fromString(bp)),'xs'), ' ' + bp + '（叫 ' + Core.waits(Core.fromString(bp)).join('、') + '）', ' ', starBadge(T.block.star),
+      bp !== T.block.shape ? '　即係 ' + T.block.shape + (T.block.name ? '（' + T.block.name + '）' : '') + ' 移咗位／左右反轉' : (T.block.name ? '　' + T.block.name : '') ])); }
   if (missed.length) fb.appendChild(h('div',null,['漏咗：' + missed.join('、')]));
   if (wrong.length) fb.appendChild(h('div',null,['錯揀（唔食得）：' + wrong.join('、')]));
   fb.appendChild(h('div',{class:'legend hint'},[ h('span',{style:'background:#e8f5e9;border:2px solid #2e7d32'},['綠＝揀啱']), h('span',{style:'background:#fff3e0;border:2px solid #ef6c00'},['橙＝漏咗']), h('span',{style:'background:#ffebee;border:2px solid #c62828'},['紅＝錯揀']) ]));
@@ -711,7 +818,7 @@ function renderLibrary(){
   var lib = getLib();
   var opts = [['all','全部']]; for (var k=2;k<=9;k++) opts.push([String(k), FEI[k] + '飛']);
   p.appendChild(h('div',{class:'row'},[ h('span',{class:'lbl'},['按叫幾飛篩選']), segmented(opts, L.filter, function(v){ L.filter = v; renderLibrary(); }) ]));
-  p.appendChild(h('div',{class:'hint'},['全部由電腦逐個試出嚟（單一花色、連住、唔可以再拆走一組都叫同樣啲牌嘅牌型）。「眼喺入面」＝3n+1 隻，要變成 n 組 + 一對眼；「眼喺出面」＝3n+2 隻（另外有眼），要變成 n+1 組。⭐＝常見／必學。撳一個牌型睇拆法。共 ' + lib.length + ' 個牌型。']));
+  p.appendChild(h('div',{class:'hint'},['全部由電腦逐個試出嚟（單一花色、連住或者中間最多隔一隻、唔可以再拆走一組都叫同樣啲牌嘅牌型）。「眼喺入面」＝3n+1 隻，要變成 n 組 + 一對眼；「眼喺出面」＝3n+2 隻（另外有眼），要變成 n+1 組。⭐＝星級（1–5，點計見「必背牌型」）。撳一個牌型睇拆法。共 ' + lib.length + ' 個牌型。']));
   for (var wc=2; wc<=9; wc++){
     if (L.filter !== 'all' && +L.filter !== wc) continue;
     var items = lib.filter(function(e){ return e.waits.length === wc; });
@@ -731,7 +838,8 @@ function libCard(e){
     tilesRow(countsToList(c),'sm'),
     h('span',null,['→ 叫 ']), tilesRow(e.waits,'xs wait'),
     h('span',{class:'badge'},[e.size + '隻・' + (e.pairInside ? '眼喺入面' : '眼喺出面')]),
-    e.featured ? h('span',{class:'badge feat'},['⭐']) : null
+    isBasic(e.shape) ? h('span',{class:'badge basic'},['基本功']) : starBadge(starOf(e.shape)),
+    e.gapped ? h('span',{class:'badge'},['中間隔一隻']) : null
   ]));
   card.appendChild(h('div',{class:'tip'},['💡 ' + e.shape + '：' + e.tip]));
   var det = h('div',{class:'detail'});
@@ -743,13 +851,109 @@ function libCard(e){
   return card;
 }
 
+/* ================= 必背牌型 ================= */
+var M = { view:'family' };
+function srcList(m){
+  var ul = h('ul');
+  (m ? m.core : []).forEach(function(id){ var s = SRCBY[id]; ul.appendChild(h('li',null,['● 當核心：', h('a',{href:s.url, target:'_blank', rel:'noopener'},[s.label])])); });
+  (m ? m.listed : []).forEach(function(id){ var s = SRCBY[id]; ul.appendChild(h('li',null,['○ 列做進階／少見：', h('a',{href:s.url, target:'_blank', rel:'noopener'},[s.label])])); });
+  if (!ul.childNodes.length) ul.appendChild(h('li',null,['冇外部來源點名（電腦列出嚟嘅牌型）。']));
+  var d = h('details',{class:'src'},[ h('summary',null,['來源（' + (m ? m.core.length + m.listed.length : 0) + '）']), ul ]);
+  d.addEventListener('click', function(ev){ ev.stopPropagation(); });
+  return d;
+}
+function mustCard(shape, opt){
+  opt = opt || {};
+  var c = Core.fromString(shape), w = Core.waits(c), m = mustOf(shape);
+  var card = h('div',{class:'card mustcard', 'data-shape':shape, 'data-waits':w.join('')});
+  var badges = [];
+  if (opt.basic) badges.push(h('span',{class:'badge basic'},['基本功']));
+  else badges.push(starBadge(m ? m.star : 1));
+  var name = opt.name || (m && m.name);
+  if (name) badges.push(h('span',{class:'badge name'},[name]));
+  badges.push(h('span',{class:'badge'},[c.reduce(function(a,b){return a+b;},0) + '隻']));
+  if (m && m.section === 'adv') badges.push(h('span',{class:'badge adv'},['進階']));
+  card.appendChild(h('div',{class:'top'},[ tilesRow(countsToList(c),'sm'), h('span',null,['→ 叫 ']), tilesRow(w,'xs wait'), h('span',{class:'waitsTxt'},[w.join('、')]) ].concat(badges)));
+  card.appendChild(h('div',{class:'tip'},['💡 ' + (opt.note || (m ? m.reason : '冇外部來源點名，只係電腦列得出。'))]));
+  if (!opt.basic) card.appendChild(srcList(m));
+  var det = h('div',{class:'detail'}); card.appendChild(det);
+  card.addEventListener('click', function(){ if (!det.childNodes.length) det.appendChild(explainEl(c, 3)); card.classList.toggle('open'); });
+  return card;
+}
+function basicNote(name, shape){
+  var b = MUST.basics.filter(function(x){ return x.name === name; })[0];
+  var w = Core.waits(Core.fromString(shape)).join('、');
+  return name + '（基本功）：' + (b && b.shape === shape ? b.note : shape + ' 叫 ' + w + '，同「' + name + '」' + (b ? ' ' + b.shape : '') + ' 一樣道理。');
+}
+function stepEl(s, showFrom){
+  var pw = Core.waits(Core.fromString(s.parent));
+  var kind = s.add === '眼' ? '一對眼' : '一組' + s.add;
+  var kids = [];
+  if (showFrom) kids.push(h('span',null,['由 ' + s.parent + '（叫 ' + pw.join('、') + '）']));
+  kids.push(h('span',{class:'plus'},['＋ ' + kind + ' ' + s.group]));
+  kids.push(h('span',null,['→ ' + s.child]));
+  kids.push(h('span',{class:'gain'},['多叫 ' + s.added.join('、')]));
+  if (s.lost.length) kids.push(h('span',null,['（少咗 ' + s.lost.join('、') + '）']));
+  return h('div',{class:'step' + (s.branch ? ' branch' : ''), 'data-parent':s.parent, 'data-child':s.child, 'data-added':s.added.join('')}, kids);
+}
+function renderMust(){
+  var p = $('#tab-must'); p.innerHTML = '';
+  p.appendChild(h('div',{class:'row'},[ h('span',{class:'lbl'},['睇法']),
+    segmented([['family','按家族'],['star','按星級']], M.view, function(v){ M.view = v; renderMust(); }) ]));
+  p.appendChild(h('div',{class:'hint'},['速叫必背：先熟基本功，再由每個家族嘅根開始，每加一組碰／上／眼就記住多叫咗邊幾隻。撳牌型睇拆法。']));
+  var meth = h('details',{class:'method'},[ h('summary',null,['星級點樣計？']) ]);
+  var ol = h('ul'); MUST.method.forEach(function(t){ ol.appendChild(h('li',null,[t])); }); meth.appendChild(ol);
+  meth.appendChild(h('div',{style:'font-weight:bold;margin-top:6px'},['來源']));
+  var sl = h('ul'); MUST.sources.forEach(function(s){ sl.appendChild(h('li',null,[h('a',{href:s.url, target:'_blank', rel:'noopener'},[s.label])])); }); meth.appendChild(sl);
+  meth.appendChild(h('div',{class:'hint'},['讀唔到內容（唔計分）：' + MUST.inaccessible.join('；')]));
+  p.appendChild(meth);
+
+  p.appendChild(h('h2',{class:'basic'},['基本功（唔計星）']));
+  MUST.basics.forEach(function(b){ p.appendChild(mustCard(b.shape, {basic:true, name:b.name, note:b.note})); });
+
+  var all = Object.keys(MUST.shapes).map(function(k){ return MUST.shapes[k]; });
+  if (M.view === 'family'){
+    MUST.families.forEach(function(f){
+      var box = h('div',{class:'fam', 'data-fam':f.id});
+      box.appendChild(h('h3',null,[f.id + '　' + f.name]));
+      box.appendChild(mustCard(f.root, f.rootBasic ? {basic:true, name:f.rootBasic, note:basicNote(f.rootBasic, f.root)} : {}));
+      var prev = f.root;
+      f.steps.forEach(function(s){
+        box.appendChild(stepEl(s, s.parent !== prev));
+        var cd = mustCard(s.child); cd.classList.add('indent'); box.appendChild(cd);
+        if (!s.branch) prev = s.child;
+      });
+      p.appendChild(box);
+    });
+  } else {
+    for (var st = 5; st >= 2; st--){
+      var items = all.filter(function(m){ return m.section === 'main' && m.star === st; })
+        .sort(function(a,b){ return a.size - b.size || b.waits.length - a.waits.length || (a.shape < b.shape ? -1 : 1); });
+      if (!items.length) continue;
+      p.appendChild(h('h2',{'data-star':st},[starStr(st) + '　' + items.length + ' 個']));
+      items.forEach(function(m){ p.appendChild(mustCard(m.shape)); });
+    }
+  }
+  var adv = all.filter(function(m){ return m.section === 'adv'; }).sort(function(a,b){ return b.star - a.star || a.size - b.size || (a.shape < b.shape ? -1 : 1); });
+  p.appendChild(h('h2',{class:'adv'},['進階（以 10 隻牌型為主，唔計必背）— ' + adv.length + ' 個']));
+  p.appendChild(h('div',{class:'hint'},['主要嚟自兩個日文 10 隻牌型專題；有興趣先睇。']));
+  adv.forEach(function(m){ p.appendChild(mustCard(m.shape)); });
+  p.appendChild(h('h2',{class:'egg'},['🎁 彩蛋']));
+  p.appendChild(stepEl({ parent: MUST.egg.from, add: MUST.egg.add, group: MUST.egg.group, child: MUST.egg.shape, added: MUST.egg.added, lost: [] }, true));
+  p.appendChild(mustCard(MUST.egg.shape));
+}
+
 /* ================= 4. 閃卡 ================= */
-var F = { range:'all', inc13:false, card:null, picks:{}, done:false, timer:null };
+var F = { range:'all', star:'all', inc13:false, card:null, picks:{}, done:false, timer:null };
 var FRANGES = [['all','全部'],['23','2–3 飛'],['45','4–5 飛'],['6','6 飛+'],['weak','弱項']];
+function mustEntry(m){
+  return { id: m.shape, shape: m.shape, waits: m.waits, size: m.size, pairInside: m.size % 3 === 1, featured: true,
+    tip: (CURATED[m.shape] || m.reason), star: m.star };
+}
 function flashPool(){
-  var lib = getLib();
+  var lib = F.star === 'all' ? getLib() : mustPool(starMin(F.star)).map(mustEntry);
   return lib.filter(function(e){
-    if (!F.inc13 && e.size >= 13) return false;
+    if (!F.inc13 && e.size >= 13 && F.star === 'all') return false;
     var w = e.waits.length;
     if (F.range === '23') return w <= 3;
     if (F.range === '45') return w === 4 || w === 5;
@@ -762,7 +966,8 @@ function renderFlash(){
   var p = $('#tab-flash'); p.innerHTML = '';
   p.appendChild(h('div',{class:'row'},[ h('span',{class:'lbl'},['範圍']), segmented(FRANGES, F.range, function(v){ F.range = v; nextFlash(); }),
     segmented([['n','唔包13隻'],['y','包13隻']], F.inc13 ? 'y':'n', function(v){ F.inc13 = v === 'y'; nextFlash(); }) ]));
-  p.appendChild(h('div',{class:'hint'},['由牌型圖鑑抽卡，答錯嘅會多啲出返。']));
+  p.appendChild(h('div',{class:'row'},[ h('span',{class:'lbl'},['星級']), segmented(STARF, F.star, function(v){ F.star = v; nextFlash(); }) ]));
+  p.appendChild(h('div',{class:'hint'},['由牌型圖鑑抽卡（揀咗星級就只出「必背牌型」入面嗰啲），答錯嘅會多啲出返。']));
   p.appendChild(h('div',{class:'table-felt'},[ h('div',{class:'hand',id:'fHand'}), h('div',{class:'notation',id:'fNote'}) ]));
   p.appendChild(h('div',{class:'row'},[ h('b',null,['叫邊幾隻？']), h('span',{class:'timer',id:'fTimer'},['⏱ 0.0 秒']) ]));
   p.appendChild(h('div',{class:'picker',id:'fPicker'}));
@@ -787,7 +992,7 @@ function drawFlash(){
   var c = Core.fromString(e.shape);
   var hand = $('#fHand'); hand.innerHTML = '';
   countsToList(c).forEach(function(n){ hand.appendChild(tileEl(n)); });
-  $('#fNote').textContent = e.shape + '　（' + e.size + ' 隻・' + (e.pairInside ? '眼喺入面' : '眼喺出面，另外有眼') + '）';
+  $('#fNote').textContent = e.shape + '　（' + e.size + ' 隻・' + (e.pairInside ? '眼喺入面' : '眼喺出面，另外有眼') + '）　' + starStr(starOf(e.shape));
   var pk = $('#fPicker'); pk.innerHTML = '';
   for (var n=1;n<=9;n++) (function(n){
     var full = c[n] >= 4, cls = full ? 'dis' : 'tap';
@@ -826,7 +1031,7 @@ function showFlashFb(){
 
 /* ================= 5. 統計 ================= */
 var KEYNAME = { tenpai:'叫咩糊', discard:'打邊隻', flash:'閃卡' };
-var DNAME = { d23:'2–3 飛', d45:'4–5 飛', d6:'6 飛+', dany:'隨機' };
+var DNAME = { d23:'2–3 飛', d45:'4–5 飛', d6:'6 飛+', dany:'隨機', s4:'4⭐以上', s5:'只出 5⭐' };
 function renderStats(){
   var p = $('#tab-stats'); p.innerHTML = '';
   var keys = Object.keys(store.stats).sort();
@@ -874,7 +1079,7 @@ function retry(m){
 
 /* ================= shell ================= */
 var current = 'tenpai';
-var RENDER = { tenpai:renderTenpai, discard:renderDiscard, library:renderLibrary, flash:renderFlash, stats:renderStats };
+var RENDER = { tenpai:renderTenpai, discard:renderDiscard, must:renderMust, library:renderLibrary, flash:renderFlash, stats:renderStats };
 function showTab(t){
   current = t;
   Array.prototype.forEach.call(document.querySelectorAll('#nav button'), function(b){ b.classList.toggle('on', b.getAttribute('data-tab') === t); });
@@ -909,7 +1114,7 @@ document.addEventListener('keydown', function(ev){
 syncHeader();
 var start = (location.hash || '').slice(1);
 showTab(RENDER[start] ? start : 'tenpai');
-window.__app = { T:T, D:D, F:F, newTenpai:newTenpai, newDiscard:newDiscard, submitTenpai:submitTenpai, submitDiscard:submitDiscard, submitFlash:submitFlash, togglePick:togglePick, showTab:showTab };
+window.__app = { T:T, D:D, F:F, M:M, MUST:MUST, newFlash:nextFlash, newTenpai:newTenpai, newDiscard:newDiscard, submitTenpai:submitTenpai, submitDiscard:submitDiscard, submitFlash:submitFlash, togglePick:togglePick, showTab:showTab };
 })();
 </script>
 </body>
