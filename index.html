@@ -536,6 +536,7 @@ var Core = (function () {
     var res = function (d) { var r = by[d]; return r.waits.length ? '叫 ' + r.waits.join('、') + '，剩 ' + r.live + ' 隻' : '唔叫糊'; };
     var lines = [], credited = {}, explained = {};
     var after = function (d) { var x = c.slice(); x[d]--; return x; };
+    // facts already shown at the top of the result (your tile, best tile) are never repeated here
     function exceptionLine(rule, t, ruleLink) {
       var x = after(b), ls = mustLinks(x, targets, 2), line = { kind: 'exc', rule: rule, tile: t, best: b };
       var head = '呢手係『' + DRULE_NAME[rule] + '』嘅例外：';
@@ -543,22 +544,22 @@ var Core = (function () {
       var lk = function (l) { return { shape: l.target.shape, placed: l.placed, waits: l.waits }; };
       if (own) {
         line.reason = 'part'; line.link = lk(own);
-        line.text = head + t + ' 雖然係孤張，但係留住佢可以組成 ' + shapeLabel(own.placed, own.target.shape) + '。打 ' + b + ' ' + res(b) + '；打 ' + t + ' ' + res(t) + '。';
+        line.text = head + t + ' 雖然係孤張，但係留住佢可以組成 ' + shapeLabel(own.placed, own.target.shape) + '。';
         return line;
       }
-      var pre = rule === 'MUST' ? '打 ' + t + ' 雖然可以留低 ' + shapeLabel(ruleLink.placed, ruleLink.target.shape) + '，' + res(t) + '；但係' : '';
+      var pre = rule === 'MUST' ? '打 ' + t + ' 雖然可以留低 ' + shapeLabel(ruleLink.placed, ruleLink.target.shape) + '，但係' : '';
       if (ls.length >= 2) {
         var p0 = fromString(ls[0].placed), p1 = fromString(ls[1].placed), ov = false;
         for (var i = 1; i <= 9; i++) if (p0[i] + p1[i] > x[i]) ov = true;
         if (ov) {
           line.reason = 'overlap'; line.links = ls.slice(0, 2).map(lk);
-          line.text = head + pre + '打 ' + b + ' 留低 ' + shapeLabel(ls[0].placed, ls[0].target.shape) + ' 同 ' + shapeLabel(ls[1].placed, ls[1].target.shape) + ' 疊埋，' + res(b) + (rule === 'MUST' ? '。' : '；打 ' + t + ' ' + res(t) + '。');
+          line.text = head + pre + '打 ' + b + ' 留低 ' + shapeLabel(ls[0].placed, ls[0].target.shape) + ' 同 ' + shapeLabel(ls[1].placed, ls[1].target.shape) + ' 疊埋，叫得更多。';
           return line;
         }
       }
       line.reason = 'compare';
       var rb = by[b], rt = by[t], why = rb.live > rt.live ? '剩嘅隻數多啲' : '叫得多啲飛';
-      line.text = head + (rule === 'MUST' ? pre + '打 ' + b + ' ' + res(b) + '，' + why + '。' : '打 ' + b + ' ' + res(b) + '；打 ' + t + ' ' + res(t) + '。打 ' + b + ' ' + why + '。');
+      line.text = head + (rule === 'MUST' ? pre + '打 ' + b + ' ' + why + '。' : (t === sel ? '' : '打 ' + t + ' ' + res(t) + '；') + '打 ' + b + ' ' + why + '。');
       return line;
     }
     ['TERM', 'ISO1', 'MUST'].forEach(function (k) {
@@ -569,8 +570,8 @@ var Core = (function () {
         var line = { kind: 'ok', rule: k, tile: d };
         if (k === 'MUST') {
           var l = r.link[d]; line.link = { shape: l.target.shape, placed: l.placed, waits: l.waits };
-          line.text = '呢手符合『' + DRULE_NAME[k] + '』：打 ' + d + ' 留低 ' + shapeLabel(l.placed, l.target.shape) + '＋齊晒嘅組，就啱：' + res(d) + '。';
-        } else line.text = '呢手符合『' + DRULE_NAME[k] + '』：打 ' + d + ' 就啱：' + res(d) + '。';
+          line.text = '呢手符合『' + DRULE_NAME[k] + '』：打 ' + d + ' 留低 ' + shapeLabel(l.placed, l.target.shape) + '＋齊晒嘅組，就啱。';
+        } else line.text = '呢手符合『' + DRULE_NAME[k] + '』：打 ' + d + ' 就啱。';
         lines.push(line);
       } else {
         var t = r.S.slice().sort(function (p, q) { return an.indexOf(by[p]) - an.indexOf(by[q]); })[0];
@@ -580,14 +581,10 @@ var Core = (function () {
     });
     if (R.NB.hit) {
       var nb = R.NB.S.filter(inB)[0];
-      if (!credited[nb]) { credited[nb] = 1; lines.push({ kind: 'nb', rule: 'NB', tile: nb, text: '見到中間孖（' + (nb - 1) + nb + nb + (nb + 1) + '）：打中間嘅 ' + nb + ' 就啱：' + res(nb) + '。' }); }
+      if (!credited[nb]) { credited[nb] = 1; lines.push({ kind: 'nb', rule: 'NB', tile: nb, text: '見到中間孖（' + (nb - 1) + nb + nb + (nb + 1) + '）：打中間嘅 ' + nb + ' 就啱。' }); }
     }
     if (!lines.length) lines.push({ kind: 'none', text: '呢手冇簡單教條，要逐隻數。' });
-    if (sel && !inB(sel)) {
-      var kan = c[sel] === 4;
-      lines.push({ kind: kan ? 'kan' : 'you', rule: kan ? 'KAN' : null, tile: sel, best: b,
-        text: (kan ? '4 隻一樣唔使急住打第 4 隻：' : '') + '你打 ' + sel + ' ' + res(sel) + '；打 ' + b + ' ' + res(b) + '。' });
-    }
+    if (sel && !inB(sel) && c[sel] === 4) lines.push({ kind: 'kan', rule: 'KAN', tile: sel, best: b, text: '4 隻一樣唔使急住打第 4 隻。' });
     return { best: B, rules: R, lines: lines };
   }
 
