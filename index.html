@@ -442,7 +442,7 @@ var Core = (function () {
   // targets: [{shape, key, ...}]. A link exists when the hand = (a shift / mirror placement of the
   // shape) + complete groups (碰/上, plus the 眼 when the shape has no 眼 inside). The placement's
   // own waits (capped by the hand's tile counts) are all waits of the hand; "exact" when they are
-  // the hand's full wait set. Picks greedily: exact first, then bigger shape, more waits, more stars;
+  // the hand's full wait set. Picks greedily: main (non-進階/彩蛋) shapes first, then exact, then bigger shape, more waits, more stars;
   // a further link is only kept if it explains a wait not already explained. Max maxN links.
   function placements(base) {
     var out = [], seen = {};
@@ -470,7 +470,8 @@ var Core = (function () {
       });
       if (best) cands.push(best);
     });
-    cands.sort(function (a, b) { return (b.exact - a.exact) || (b.size - a.size) || (b.waits.length - a.waits.length) || ((b.target.star || 0) - (a.target.star || 0)); });
+    var isMain = function (m) { return (m.target.section || 'main') === 'main' ? 1 : 0; };
+    cands.sort(function (a, b) { return (isMain(b) - isMain(a)) || (b.exact - a.exact) || (b.size - a.size) || (b.waits.length - a.waits.length) || ((b.target.star || 0) - (a.target.star || 0)); });
     var out = [], covered = {};
     for (var i = 0; i < cands.length && out.length < maxN; i++) {
       var m = cands[i], adds = m.waits.some(function (x) { return !covered[x]; });
@@ -478,6 +479,10 @@ var Core = (function () {
       m.waits.forEach(function (x) { covered[x] = 1; }); out.push(m);
       if (m.exact) break;
     }
+    // exception: the famous full-hand 彩蛋 (九蓮寶燈) is always shown when the hand *is* it,
+    // after the best main-shape link
+    var egg = cands.filter(function (m) { return m.exact && m.target.section === 'egg'; })[0];
+    if (egg && out.indexOf(egg) < 0) out = out.slice(0, maxN - 1).concat([egg]);
     return out;
   }
   function isRestComplete(d, withPair) {
