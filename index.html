@@ -123,6 +123,7 @@ details.method summary{cursor:pointer;font-weight:bold}
 details.method li{margin:3px 0}
 details.method a{color:#1565c0;word-break:break-all}
 .mlinks{margin:10px 0 4px}
+.deadw{color:#9a9a9a;margin-left:2px}
 details.drules{background:#fffaf0;border:1px solid #e0c98a;border-radius:10px;margin:6px 0 4px;padding:4px 10px;font-size:14px;line-height:1.45}
 details.drules summary{cursor:pointer;font-weight:bold;color:#7a5a12;padding:2px 0}
 details.drules ol{margin:2px 0 4px;padding-left:22px}
@@ -441,7 +442,7 @@ var Core = (function () {
       if (!ok) continue;
       // the extra tiles must neither add nor remove waits relative to the block itself
       var w = waits(c), blk = null;
-      for (var q = 0; q < cands.length; q++) { var d = c.slice(), okq = true; for (var i = 1; i <= 9; i++) { d[i] -= cands[q][i]; if (d[i] < 0) okq = false; } if (okq && isRestComplete(d, needPair)) { var bw = waits(cands[q]).filter(function (t) { return c[t] < 4; }); if (bw.join() === w.join() && bw.length === want) { blk = cands[q]; break; } } }
+      for (var q = 0; q < cands.length; q++) { var d = c.slice(), okq = true; for (var i = 1; i <= 9; i++) { d[i] -= cands[q][i]; if (d[i] < 0) okq = false; } if (okq && isRestComplete(d, needPair)) { var bw = splitShapeWaits(cands[q], c).live; if (bw.join() === w.join() && bw.length === want) { blk = cands[q]; break; } } }
       if (blk) { c.block = toString(blk); return c; }
     }
     return null;
@@ -461,6 +462,18 @@ var Core = (function () {
     });
     return out;
   }
+  // THE single place that splits a must-know shape's waits (at its placed position inside hand c) into
+  // live waits and dead waits (the hand already holds all 4 copies, so they can never be won on).
+  function splitShapeWaits(placed, c) {
+    var all = waits(placed);
+    return { all: all, live: all.filter(function (x) { return c[x] < 4; }), dead: all.filter(function (x) { return c[x] >= 4; }) };
+  }
+  // shared wording for a link's waits (used by every link display); live + dead always == all theoretical waits
+  function linkWaitsText(l) {
+    var dot = function (a) { return a.join('·'); }, d = l.dead || [];
+    return { live: (l.exact ? '叫 ' : '貢獻叫 ') + dot(l.waits),
+      dead: d.length ? (l.exact ? '（' : '（另外 ') + dot(d) + ' 已經冇牌' + (l.exact ? '）' : '，食唔到）') : '' };
+  }
   function mustLinks(c, targets, maxN) {
     maxN = maxN || 2;
     var W = waits(c); if (W.length < 2) return [];
@@ -472,10 +485,12 @@ var Core = (function () {
       placements(base).forEach(function (p) {
         var rest = c.slice(); for (var i = 1; i <= 9; i++) { rest[i] -= p[i]; if (rest[i] < 0) return; }
         if (!isRestComplete(rest.slice(), sz % 3 === 2)) return;
-        var pw = waits(p).filter(function (x) { return c[x] < 4; });
-        if (pw.length < 2) return;
+        // theoretical waits of the shape at this position; the ones the hand already holds all 4 of are dead
+        var sp = splitShapeWaits(p, c), tw = sp.all, pw = sp.live, dead = sp.dead;
+        if (tw.length < 2 || pw.length < 1) return;
         for (var j = 0; j < pw.length; j++) if (W.indexOf(pw[j]) < 0) return; // cannot happen; safety
-        if (!best || pw.length > best.waits.length) best = { target: t, placed: toString(p), rest: toString(rest), waits: pw, exact: pw.join() === W.join(), size: sz };
+        if (!best || pw.length > best.waits.length || (pw.length === best.waits.length && tw.length > best.waits.length + best.dead.length))
+          best = { target: t, placed: toString(p), rest: toString(rest), waits: pw, dead: dead, exact: pw.join() === W.join(), size: sz };
       });
       if (best) cands.push(best);
     });
@@ -541,7 +556,7 @@ var Core = (function () {
       var x = after(b), ls = mustLinks(x, targets, 2), line = { kind: 'exc', rule: rule, tile: t, best: b };
       var head = '呢手係『' + DRULE_NAME[rule] + '』嘅例外：';
       var own = (rule === 'TERM' || rule === 'ISO1') ? ls.filter(function (l) { return fromString(l.placed)[t] > 0; })[0] : null;
-      var lk = function (l) { return { shape: l.target.shape, placed: l.placed, waits: l.waits }; };
+      var lk = function (l) { return { shape: l.target.shape, placed: l.placed, waits: l.waits, dead: l.dead }; };
       if (own) {
         line.reason = 'part'; line.link = lk(own);
         line.text = head + t + ' 雖然係孤張，但係留住佢可以組成 ' + shapeLabel(own.placed, own.target.shape) + '。';
@@ -569,7 +584,7 @@ var Core = (function () {
         var d = r.S.filter(inB)[0]; credited[d] = 1;
         var line = { kind: 'ok', rule: k, tile: d };
         if (k === 'MUST') {
-          var l = r.link[d]; line.link = { shape: l.target.shape, placed: l.placed, waits: l.waits };
+          var l = r.link[d]; line.link = { shape: l.target.shape, placed: l.placed, waits: l.waits, dead: l.dead };
           line.text = '呢手符合『' + DRULE_NAME[k] + '』：打 ' + d + ' 留低 ' + shapeLabel(l.placed, l.target.shape) + '＋齊晒嘅組，就啱。';
         } else line.text = '呢手符合『' + DRULE_NAME[k] + '』：打 ' + d + ' 就啱。';
         lines.push(line);
@@ -596,7 +611,7 @@ var Core = (function () {
     enumerateVectors: enumerateVectors, mirror: mirror, connected: connected,
     maxGap: maxGap, classKey: classKey, tenpaiFromBlock: tenpaiFromBlock,
     mustLinks: mustLinks, isRestComplete: isRestComplete, placements: placements,
-    discardRuleSets: discardRuleSets, discardAdvice: discardAdvice, shapeLabel: shapeLabel, DRULE_NAME: DRULE_NAME
+    discardRuleSets: discardRuleSets, splitShapeWaits: splitShapeWaits, linkWaitsText: linkWaitsText, discardAdvice: discardAdvice, shapeLabel: shapeLabel, DRULE_NAME: DRULE_NAME
   };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = Core;
@@ -710,6 +725,11 @@ function explainEl(c, maxD){
   return box;
 }
 function relStr(sh){ return Core.fromString(sh).slice(1).join('').replace(/^0+|0+$/g, ''); }
+// every link display renders waits through this (live + greyed dead, from Core.linkWaitsText)
+function linkWaitsEl(l){
+  var t = Core.linkWaitsText(l);
+  return h('span',{class:'lw'},[ h('span',{class:'livew'},[t.live]), t.dead ? h('span',{class:'deadw'},[t.dead]) : null ]);
+}
 function mustLinksEl(c, title){
   var ls = Core.mustLinks(c, LINKT, 2);
   if (!ls.length) return null;
@@ -725,7 +745,7 @@ function mustLinksEl(c, title){
       m.name ? h('span',{class:'badge name'},[m.name]) : null,
       starBadge(m.star),
       m.section === 'adv' ? h('span',{class:'badge adv'},['進階']) : m.section === 'egg' ? h('span',{class:'badge adv'},['彩蛋']) : null,
-      h('span',null,[(l.exact ? '叫 ' : '貢獻叫 ') + dot(l.waits)]),
+      linkWaitsEl(l),
       h('span',{class:'ml-go'},['睇牌型 ›'])
     ]);
     // highlighted split: the shape itself + the remaining complete groups
@@ -739,7 +759,7 @@ function mustLinksEl(c, title){
       g.tiles.forEach(function(n){ gr.appendChild(tileEl(n,'xs')); });
       wrap.appendChild(h('div',null,[gr, h('div',{class:'grp-lbl'},[g.type === 'pair' ? '眼' : g.type === 'pung' ? '碰' : '上'])]));
     });
-    var row = h('div',{class:'mlink', 'data-target':m.shape, 'data-placed':l.placed, 'data-waits':l.waits.join(''), 'data-exact':l.exact ? '1' : '0',
+    var row = h('div',{class:'mlink', 'data-target':m.shape, 'data-placed':l.placed, 'data-waits':l.waits.join(''), 'data-dead':(l.dead || []).join(''), 'data-exact':l.exact ? '1' : '0',
       onclick:function(){ gotoMust(m.shape); }},[head, wrap]);
     box.appendChild(row);
   });
